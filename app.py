@@ -83,12 +83,12 @@ st.markdown("""
 # 설정
 # ══════════════════════════════════════════════════════
 TICKERS = {
-    "NQ":  ("^NDX",     "나스닥 100",       "수축기 혈압", "pt",    "#D35400"),
+    "NQ":  ("^NDX",     "나스닥 100",       "수축기 혈압", "pt",    "#E24B4A"),
     "SP":  ("^GSPC",    "S&P 500",         "이완기 혈압", "pt",    "#F0A500"),
     "TNX": ("^TNX",     "미국채 10년물",    "심박수",      "%",     "#8E44AD"),
     "DXY": ("DX-Y.NYB", "달러 인덱스",      "체온",        "DXY",   "#4A90D9"),
     "VIX": ("^VIX",     "VIX 변동성",       "호흡수",      "",      "#27AE60"),
-    "WTI": ("CL=F",     "WTI 유가 선물",     "혈당",        "$/bbl", "#C0392B"),
+    "WTI": ("CL=F",     "WTI 유가 선물",     "혈당",        "$/bbl", "#1A3A6B"),
     "GLD": ("GC=F",     "금 선물",          "전통자산",    "$/oz",  "#FFD700"),
     "BTC": ("BTC-USD",  "비트코인",          "신흥자산",    "$",     "#FF69B4"),
 }
@@ -154,6 +154,248 @@ def grade_color(key, val):
 # ══════════════════════════════════════════════════════
 # 데이터 캐시
 # ══════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════
+# EIA WTI 현물 데이터
+# ══════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_eia_spot(api_key: str):
+    """EIA API로 WTI 현물가 로드"""
+    import requests
+    url = (
+        "https://api.eia.gov/v2/petroleum/pri/spt/data/"
+        "?frequency=daily&data[0]=value"
+        "&facets[series][]=RWTC"
+        "&sort[0][column]=period&sort[0][direction]=desc"
+        f"&offset=0&length=5000&api_key={api_key}"
+    )
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        rows = data["response"]["data"]
+        df = pd.DataFrame(rows)[["period","value"]].copy()
+        df["Date"]  = pd.to_datetime(df["period"])
+        df["Spot"]  = pd.to_numeric(df["value"], errors="coerce")
+        df = df[["Date","Spot"]].dropna().set_index("Date").sort_index()
+        return df
+    except Exception as e:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sector_data(period_key: str):
+    """섹터 ETF 200일 이동평균 대비 편차 시계열 로드"""
+    SECTOR_TICKERS = {
+        "QQQ":  "나스닥100",
+        "SPY":  "S&P500",
+        "DIA":  "다우존스",
+        "IWM":  "러셀2000",
+        "SOXX": "반도체",
+        "XLK":  "기술",
+        "XLC":  "통신",
+        "XLY":  "임의소비재",
+        "XLF":  "금융",
+        "XLV":  "헬스케어",
+        "XLE":  "에너지",
+        "XLI":  "산업재",
+        "XLB":  "소재",
+        "XLU":  "유틸리티",
+        "XLRE": "부동산",
+        "XLP":  "필수소비재",
+    }
+    # 시각적으로 구분되는 16색 팔레트 (색상환 균등 분배)
+    PALETTE = [
+        "#E24B4A","#4A90D9","#27AE60","#F1C40F","#8E44AD","#E67E22",
+        "#1ABC9C","#E74C3C","#3498DB","#2ECC71","#9B59B6","#F39C12",
+        "#16A085","#D35400","#C0392B","#2980B9",
+    ]
+    series = {}
+    for idx, (ticker, label) in enumerate(SECTOR_TICKERS.items()):
+        color = PALETTE[idx % len(PALETTE)]
+        try:
+            use_start = period_key.isdigit()
+            if use_start:
+                df = yf.download(ticker, start=f"{period_key}-01-01",
+                                 interval="1d", progress=False, auto_adjust=True)
+            else:
+                df = yf.download(ticker, period=period_key if period_key != "max" else "max",
+                                 interval="1d", progress=False, auto_adjust=True)
+            if df.empty: continue
+            if isinstance(df.columns, pd.MultiIndex):
+                s = df[("Close", ticker)].dropna()
+            else:
+                s = df["Close"].dropna()
+            s = s.astype(float)
+            ma200 = s.rolling(200, min_periods=50).mean()
+            dev = ((s - ma200) / ma200 * 100).dropna()
+            series[ticker] = {
+                "label": label,
+                "color": color,   # PALETTE에서 자동 배정
+                "dev":   dev,
+                "cur":   float(dev.iloc[-1]),
+            }
+        except:
+            pass
+    return series
+
+def make_sector_fig(sector_data, period_label=""):
+    """⑦ 섹터별 200일 편차% 시계열 라인 차트"""
+    if not sector_data:
+        return go.Figure()
+
+    fig = go.Figure()
+
+    for ticker, info in sector_data.items():
+        dev = info["dev"]
+        # period에 맞게 슬라이싱
+        dev_plot = dev
+        dates_s = [d.strftime("%Y-%m-%d") for d in dev_plot.index]
+        cur = info["cur"]
+        fig.add_trace(go.Scatter(
+            x=dates_s, y=dev.values.tolist(),
+            name=f"{info['label']} ({ticker})  {cur:+.1f}%",
+            mode="lines",
+            line=dict(color=info["color"], width=1.8),
+            hovertemplate=f"<b>{info['label']}</b>: %{{y:+.1f}}%<br>%{{x}}<extra></extra>",
+        ))
+
+    # 기준선
+    fig.add_hline(y=20,  line_color="rgba(226,75,74,0.35)",
+                  line_width=1, line_dash="dot",
+                  annotation_text="+20% 과열",
+                  annotation_font=dict(size=8, color="#E24B4A"),
+                  annotation_position="right")
+    fig.add_hline(y=-20, line_color="rgba(74,144,217,0.35)",
+                  line_width=1, line_dash="dot",
+                  annotation_text="-20% 침체",
+                  annotation_font=dict(size=8, color="#4A90D9"),
+                  annotation_position="right")
+    fig.add_hline(y=0,   line_color="rgba(150,150,150,0.4)",
+                  line_width=1)
+
+    # 배경
+    fig.add_hrect(y0=20,  y1=80,  fillcolor="rgba(226,75,74,0.04)",  line_width=0)
+    fig.add_hrect(y0=-80, y1=-20, fillcolor="rgba(74,144,217,0.04)", line_width=0)
+
+    # 날짜 범위
+    all_dates = []
+    for info in sector_data.values():
+        all_dates.extend(info["dev"].index.tolist())
+    if all_dates:
+        d0 = min(all_dates).strftime("%Y-%m-%d")
+        d1 = max(all_dates).strftime("%Y-%m-%d")
+    else:
+        d0, d1 = dates[0], dates[-1]
+
+    fig.update_layout(
+        title=f"⑦ 섹터별 200일 이동평균 대비 편차% 시계열  [{period_label}]",
+        height=580, hovermode="x unified",
+        plot_bgcolor="#fafafa", paper_bgcolor="white",
+        margin=dict(l=55, r=10, t=50, b=80),
+        legend=dict(orientation="h", x=0, y=-0.18,
+                    font=dict(size=10, color="#111"),
+                    bgcolor="rgba(255,255,255,0.85)"),
+        yaxis=dict(
+            title="200일 MA 대비 편차 (%)",
+            title_font=dict(size=10, color="#555"),
+            tickfont=dict(size=9, color="#111"),
+            ticksuffix="%",
+            gridcolor="rgba(180,180,180,0.15)",
+            zeroline=True, zerolinecolor="rgba(150,150,150,0.4)",
+        ),
+        xaxis=dict(
+            tickfont=dict(size=9, color="#111"),
+            gridcolor="rgba(180,180,180,0.18)",
+            range=[d0, d1],
+        ),
+    )
+    return fig
+
+def make_wti_fig(spot_df, futures_s, dates):
+    """WTI 현물 / 선물 / 괴리 차트"""
+    fig = go.Figure()
+
+    # 선물 (yfinance, 기존 A["WTI"])
+    fig.add_trace(go.Scatter(
+        x=dates, y=futures_s.values.tolist(),
+        name="WTI 선물 (CL=F)",
+        mode="lines",
+        line=dict(color="#1A3A6B", width=2.0),
+        hovertemplate="<b>WTI 선물</b>: $%{y:.2f}<br>%{x}<extra></extra>",
+    ))
+
+    if spot_df is not None:
+        # 현물과 선물 공통 인덱스
+        spot_reindexed = spot_df["Spot"].reindex(
+            pd.to_datetime(dates)
+        ).ffill()
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=spot_reindexed.values.tolist(),
+            name="WTI 현물 (EIA Cushing)",
+            mode="lines",
+            line=dict(color="#E67E22", width=2.0),
+            hovertemplate="<b>WTI 현물</b>: $%{y:.2f}<br>%{x}<extra></extra>",
+        ))
+
+        # 괴리 (현물 - 선물)
+        spread = spot_reindexed - futures_s.reindex(pd.to_datetime(dates)).ffill()
+        fig.add_trace(go.Scatter(
+            x=dates, y=spread.values.tolist(),
+            name="괴리 (현물 - 선물)",
+            mode="lines",
+            line=dict(color="#8E44AD", width=1.5, dash="dash"),
+            yaxis="y2",
+            hovertemplate="<b>괴리</b>: $%{y:.2f}<br>%{x}<extra></extra>",
+        ))
+
+        # 0 기준선
+        fig.add_hline(y=0, line_color="rgba(150,150,150,0.4)",
+                      line_width=1, line_dash="dot", yref="y2")
+
+        # 현재 괴리 표시
+        cur_spread = float(spread.dropna().iloc[-1]) if len(spread.dropna()) > 0 else 0
+        cur_spot   = float(spot_reindexed.dropna().iloc[-1]) if len(spot_reindexed.dropna()) > 0 else 0
+        cur_fut    = float(futures_s.iloc[-1])
+        spread_note = (
+            f"현물 ${cur_spot:.1f} / 선물 ${cur_fut:.1f} / "
+            f"괴리 ${cur_spread:+.1f}"
+        )
+    else:
+        spread_note = "EIA API 키 필요"
+
+    fig.update_layout(
+        title=f"⑥ WTI 유가 — 현물 vs 선물 vs 괴리  ({spread_note})",
+        height=480, hovermode="x unified",
+        plot_bgcolor="#fafafa", paper_bgcolor="white",
+        margin=dict(l=55, r=80, t=50, b=60),
+        legend=dict(orientation="h", x=0, y=-0.15,
+                    font=dict(size=10, color="#111")),
+        yaxis=dict(
+            title="가격 ($/bbl)",
+            title_font=dict(color="#C0392B", size=10),
+            tickfont=dict(color="#111", size=9),
+            gridcolor="rgba(180,180,180,0.15)",
+            tickprefix="$",
+        ),
+        yaxis2=dict(
+            title="괴리 ($)",
+            title_font=dict(color="#8E44AD", size=10),
+            tickfont=dict(color="#8E44AD", size=9),
+            overlaying="y", side="right",
+            showgrid=False,
+            tickprefix="$",
+            zeroline=True,
+            zerolinecolor="rgba(142,68,173,0.3)",
+        ),
+        xaxis=dict(
+            tickfont=dict(size=9, color="#111"),
+            gridcolor="rgba(180,180,180,0.18)",
+            range=[dates[0], dates[-1]],
+        ),
+    )
+    return fig
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(period: str):
     def extract_close(df):
@@ -237,8 +479,19 @@ with st.sidebar:
     show_crisis = st.toggle("경제위기 구간 표시", value=True)
     show_fig3   = st.toggle("④ 통합 차트 표시",   value=True)
     show_fig5   = st.toggle("⑤ 보정 차트 표시",   value=True)
+    show_fig6   = st.toggle("⑥ WTI 현물/선물 표시", value=True)
+    show_fig7   = st.toggle("⑦ 섹터별 이격 표시",    value=True)
 
     st.divider()
+
+    st.divider()
+    st.markdown("**🛢 EIA API 키**")
+    try:
+        eia_key = st.secrets["EIA_API_KEY"]
+        st.caption("Secrets에서 로드됨")
+    except:
+        eia_key = st.text_input("EIA API Key", type="password",
+                                placeholder="eia.gov에서 무료 발급")
 
     if st.button("🔄 데이터 새로고침", use_container_width=True):
         st.cache_data.clear()
@@ -309,17 +562,17 @@ def make_bp_fig():
             bx += [dates[i], dates[i], None]
             by += [sp_v[i], nq_v[i], None]
         fig.add_trace(go.Scatter(x=bx, y=by, mode="lines",
-            line=dict(color="rgba(211,84,0,0.15)", width=0.9),
+            line=dict(color="rgba(226,75,74,0.15)", width=0.9),
             showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=dates, y=nq_v, fill=None, mode="none",
             showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=dates, y=sp_v, fill="tonexty",
-            fillcolor="rgba(211,84,0,0.08)", mode="none",
+            fillcolor="rgba(226,75,74,0.08)", mode="none",
             showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=dates, y=nq_v,
             name="나스닥 100 (수축기 혈압)", mode="lines+markers",
             line=dict(color="#D35400", width=2.0),
-            marker=dict(symbol="triangle-up", size=3, color="#D35400", maxdisplayed=400),
+            marker=dict(symbol="triangle-up", size=3, color="#E24B4A", maxdisplayed=400),
             hovertemplate="<b>나스닥</b>: %{y:,.0f} pt<br>%{x}<extra></extra>"))
         fig.add_trace(go.Scatter(x=dates, y=sp_v,
             name="S&P 500 (이완기 혈압)", mode="lines+markers",
@@ -334,7 +587,7 @@ def make_bp_fig():
         legend=dict(orientation="h", x=0, y=-0.15, font=dict(size=10, color="#111")),
         yaxis=dict(title=None,
             showticklabels=False, showline=False, showgrid=True,
-            gridcolor="rgba(211,84,0,0.10)",
+            gridcolor="rgba(226,75,74,0.10)",
             range=[SCALES["BP_L"], SCALES["BP_H"]], zeroline=False),
         xaxis=dict(tickfont=dict(size=9, color="#111"), gridcolor="rgba(180,180,180,0.18)",
             range=[dates[0], dates[-1]]),
@@ -368,8 +621,8 @@ def make_vital_fig():
     if "WTI" in A:
         fig.add_trace(go.Scatter(x=dates, y=A["WTI"].values.tolist(),
             name="혈당 — WTI 유가 선물", mode="lines+markers",
-            line=dict(color="#C0392B", width=2.0, dash="longdash"),
-            marker=dict(symbol="star", size=3, color="#C0392B", maxdisplayed=400),
+            line=dict(color="#1A3A6B", width=2.0, dash="longdash"),
+            marker=dict(symbol="star", size=3, color="#1A3A6B", maxdisplayed=400),
             yaxis="y4",
             hovertemplate="<b>WTI 유가 선물</b>: $%{y:.1f}<br>%{x}<extra></extra>"))
     fig.update_layout(
@@ -496,7 +749,7 @@ def make_deviation_fig():
             x=dates, y=dev_nq.values.tolist(),
             name="나스닥 편차% (수축기 혈압)",
             mode="lines",
-            line=dict(color="#D35400", width=2.0),
+            line=dict(color="#E24B4A", width=2.0),
             yaxis="y",
             hovertemplate="<b>나스닥 편차</b>: %{y:+.1f}%<br>%{x}<extra></extra>",
         ))
@@ -519,7 +772,7 @@ def make_deviation_fig():
          SCALES["DXY_L"], SCALES["DXY_H"]),
         ("VIX", "호흡수 (VIX)",          "#27AE60", "solid",    "y4",
          SCALES["VIX_L"], SCALES["VIX_H"]),
-        ("WTI", "혈당 (WTI 유가)",       "#C0392B", "longdash", "y5",
+        ("WTI", "혈당 (WTI 유가)",       "#1A3A6B", "longdash", "y5",
          SCALES["WTI_L"], SCALES["WTI_H"]),
     ]
     for key, label, color, dash, yax, ymin, ymax in OTHER:
@@ -605,7 +858,7 @@ def make_combined_fig():
             bx += [dates[i], dates[i], None]
             by += [sp_v[i], nq_v[i], None]
         fig.add_trace(go.Scatter(x=bx, y=by, mode="lines",
-            line=dict(color="rgba(211,84,0,0.13)", width=0.8),
+            line=dict(color="rgba(226,75,74,0.13)", width=0.8),
             showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=dates, y=nq_v,
             name="나스닥 (수축기 혈압)", mode="lines",
@@ -620,7 +873,7 @@ def make_combined_fig():
         ("TNX","y2","#8E44AD","dot","x"),
         ("DXY","y3","#4A90D9","dashdot","cross"),
         ("VIX","y4","#27AE60","solid","diamond"),
-        ("WTI","y5","#C0392B","longdash","star"),
+        ("WTI","y5","#1A3A6B","longdash","star"),
         ("GLD","y6","#FFD700","solid","hexagon"),
         ("BTC","y7","#FF69B4","dash","circle"),
     ]:
@@ -645,7 +898,7 @@ def make_combined_fig():
         ),
         yaxis=dict(title=None,
             showticklabels=False, showline=False, showgrid=True,
-            gridcolor="rgba(211,84,0,0.08)",
+            gridcolor="rgba(226,75,74,0.08)",
             range=[SCALES["BP_L"], SCALES["BP_H"]], zeroline=False),
         yaxis2=dict(title=None,
             showticklabels=False, showline=False, showgrid=False,
@@ -715,7 +968,7 @@ with c1:
 with c2:
     st.markdown("##### ① 혈압")
     render_legend([
-        ("나스닥 100", "#D35400", "수축기 혈압 (pt)", "100 ~ 35,000"),
+        ("나스닥 100", "#E24B4A", "수축기 혈압 (pt)", "100 ~ 35,000"),
         ("S&P 500",   "#F0A500", "이완기 혈압 (pt)", "100 ~ 35,000"),
     ], chart_height=420)
 
@@ -729,7 +982,7 @@ with c2:
         ("심박수", "#8E44AD", "미국채 10년물 (%)",     "0 ~ 10"),
         ("체온",   "#4A90D9", "달러 인덱스",           "50 ~ 200"),
         ("호흡수", "#27AE60", "VIX 변동성",            "5 ~ 100"),
-        ("혈당",   "#C0392B", "WTI 유가 선물 ($/bbl)", "0 ~ 200"),
+        ("혈당",   "#1A3A6B", "WTI 유가 선물 ($/bbl)", "0 ~ 200"),
     ], chart_height=520)
 
 # ③ 자산 (금 + BTC)
@@ -751,12 +1004,12 @@ if show_fig3:
     with c2:
         st.markdown("##### ④ 통합")
         render_legend([
-            ("혈압(나스닥)", "#D35400", "수축기 혈압 (pt)",      "100 ~ 35,000"),
+            ("혈압(나스닥)", "#E24B4A", "수축기 혈압 (pt)",      "100 ~ 35,000"),
             ("혈압(S&P)",   "#F0A500", "이완기 혈압 (pt)",      "100 ~ 35,000"),
             ("심박수",       "#8E44AD", "미국채 10년물 (%)",     "0 ~ 10"),
             ("체온",         "#4A90D9", "달러 인덱스",           "50 ~ 200"),
             ("호흡수",       "#27AE60", "VIX 변동성",            "5 ~ 100"),
-            ("혈당",         "#C0392B", "WTI 유가 선물 ($/bbl)", "0 ~ 200"),
+            ("혈당",         "#1A3A6B", "WTI 유가 선물 ($/bbl)", "0 ~ 200"),
             ("전통자산",     "#FFD700", "금 선물 ($/oz)",         "200 ~ 6,000"),
             ("신흥자산",     "#FF69B4", "비트코인 ($)",           "0 ~ 140,000"),
         ], chart_height=780)
@@ -770,18 +1023,65 @@ if show_fig5:
     with c2:
         st.markdown("##### ⑤ 보정")
         render_legend([
-            ("나스닥 편차%", "#D35400", "수축기 혈압", "+/-% (0=MA)"),
+            ("나스닥 편차%", "#E24B4A", "수축기 혈압", "+/-% (0=MA)"),
             ("S&P 편차%",   "#F0A500", "이완기 혈압", "+/-% (0=MA)"),
             ("심박수",       "#8E44AD", "미국채 10년물", "0~10"),
             ("체온",         "#4A90D9", "달러 인덱스", "50~200"),
             ("호흡수",       "#27AE60", "VIX 변동성", "5~100"),
-            ("혈당",         "#C0392B", "WTI 유가 선물", "0~200"),
+            ("혈당",         "#1A3A6B", "WTI 유가 선물", "0~200"),
             ("금 편차%",     "#FFD700", "전통자산 (금 선물)", "+/-% (0=MA)"),
             ("BTC 편차%÷4", "#FF69B4", "신흥자산 (비트코인)", "+/-% ÷4 보정"),
         ], chart_height=580)
 
 
+# ⑥ WTI 현물/선물/괴리
+if show_fig6:
+    st.divider()
+    spot_df = load_eia_spot(eia_key) if eia_key else None
+    if "WTI" in A:
+        wti_futures = A["WTI"]
+        c1, c2 = st.columns([6, 1])
+        with c1:
+            st.plotly_chart(make_wti_fig(spot_df, wti_futures, dates),
+                           use_container_width=True)
+        with c2:
+            st.markdown("##### ⑥ WTI")
+            render_legend([
+                ("선물 (CL=F)", "#1A3A6B", "WTI 1개월 선물",    "$/bbl"),
+                ("현물 (EIA)",  "#E67E22", "Cushing OK 현물",   "$/bbl"),
+                ("괴리",        "#8E44AD", "현물 - 선물",        "$ 차이"),
+            ], chart_height=480)
+    else:
+        st.warning("WTI 데이터 없음")
+
+# ⑦ 섹터별 편차
+if show_fig7:
+    st.divider()
+    with st.spinner("섹터 데이터 로딩 중..."):
+        sector_data = load_sector_data(period)
+    if sector_data:
+        c1, c2 = st.columns([6, 1])
+        with c1:
+            st.plotly_chart(make_sector_fig(sector_data, period_label),
+                           use_container_width=True)
+        with c2:
+            st.markdown("##### ⑦ 섹터")
+            st.markdown(
+                "<small style='color:#aaa;font-size:9px;line-height:1.6'>"
+                "QQQ 나스닥100<br>SPY S&P500<br>DIA 다우존스<br>"
+                "IWM 러셀2000<br>SOXX 반도체<br>XLK 기술<br>"
+                "XLC 통신<br>XLY 임의소비재<br>XLF 금융<br>"
+                "XLV 헬스케어<br>XLE 에너지<br>XLI 산업재<br>"
+                "XLB 소재<br>XLU 유틸리티<br>XLRE 부동산<br>"
+                "XLP 필수소비재"
+                "</small>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.warning("섹터 데이터를 불러오지 못했습니다.")
+
 # ══════════════════════════════════════════════════════
+# 데이터 다운로드# ══════════════════════════════════════════════════════
 # 데이터 다운로드
 # ══════════════════════════════════════════════════════
 st.divider()
