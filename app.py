@@ -156,30 +156,49 @@ def grade_color(key, val):
 # ══════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════
-# EIA WTI 현물 데이터
+# WTI 현물/선물 데이터
 # ══════════════════════════════════════════════════════
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_eia_spot(api_key: str):
-    """EIA API로 WTI 현물가 로드"""
+def load_wti_data(api_key: str):
+    """EIA API로 WTI 현물(주간) + yfinance로 WTI 선물 로드"""
     import requests
-    url = (
-        "https://api.eia.gov/v2/petroleum/pri/spt/data/"
-        "?frequency=daily&data[0]=value"
-        "&facets[series][]=RWTC"
-        "&sort[0][column]=period&sort[0][direction]=desc"
-        f"&offset=0&length=5000&api_key={api_key}"
-    )
+
+    # WTI 현물 (EIA, RWTC)
+    spot_df = None
     try:
+        url = (
+            "https://api.eia.gov/v2/petroleum/pri/spt/data/"
+            "?frequency=daily&data[0]=value"
+            "&facets[series][]=RWTC"
+            "&sort[0][column]=period&sort[0][direction]=desc"
+            f"&offset=0&length=5000&api_key={api_key}"
+        )
         r = requests.get(url, timeout=10)
         data = r.json()
         rows = data["response"]["data"]
         df = pd.DataFrame(rows)[["period","value"]].copy()
-        df["Date"]  = pd.to_datetime(df["period"])
-        df["Spot"]  = pd.to_numeric(df["value"], errors="coerce")
-        df = df[["Date","Spot"]].dropna().set_index("Date").sort_index()
-        return df
-    except Exception as e:
-        return None
+        df["Date"] = pd.to_datetime(df["period"])
+        df["Spot"] = pd.to_numeric(df["value"], errors="coerce")
+        spot_df = df[["Date","Spot"]].dropna().set_index("Date").sort_index()
+    except:
+        pass
+
+    # WTI 선물 (yfinance CL=F)
+    fut_df = None
+    try:
+        raw = yf.download("CL=F", period="max", interval="1d",
+                          progress=False, auto_adjust=True)
+        if not raw.empty:
+            if isinstance(raw.columns, pd.MultiIndex):
+                s = raw[("Close","CL=F")].dropna()
+            else:
+                s = raw["Close"].dropna()
+            fut_df = s.astype(float).to_frame("Futures")
+            fut_df.index = pd.to_datetime(fut_df.index).tz_localize(None)
+    except:
+        pass
+
+    return spot_df, fut_df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -311,25 +330,147 @@ def make_sector_fig(sector_data, period_label=""):
     )
     return fig
 
-def make_wti_fig(spot_df, futures_s, dates):
-    """WTI 현물 / 선물 / 괴리 차트"""
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_bond_data(period_key: str):
+    """채권 ETF 가격 + 200일 이동평균 대비 편차 시계열"""
+    BOND_TICKERS = {
+        "SHY":  ("단기채 1-3년",  "#4A90D9"),
+        "IEF":  ("중기채 7-10년", "#27AE60"),
+        "TLT":  ("장기채 20년+",  "#8E44AD"),
+        "HYG":  ("하이일드 회사채","#E24B4A"),
+        "JNK":  ("정크본드",       "#F1C40F"),
+        "LQD":  ("투자등급 회사채","#E67E22"),
+    }
+    use_start = period_key.isdigit()
+    series = {}
+    for ticker, (label, color) in BOND_TICKERS.items():
+        try:
+            if use_start:
+                df = yf.download(ticker, start=f"{period_key}-01-01",
+                                 interval="1d", progress=False, auto_adjust=True)
+            else:
+                df = yf.download(ticker, period=period_key,
+                                 interval="1d", progress=False, auto_adjust=True)
+            if df.empty: continue
+            if isinstance(df.columns, pd.MultiIndex):
+                s = df[("Close", ticker)].dropna()
+            else:
+                s = df["Close"].dropna()
+            s = s.astype(float)
+            # 200일 MA는 항상 충분한 데이터로 계산 (ma용 전체 다운 후 슬라이싱)
+            ma200 = s.rolling(200, min_periods=50).mean()
+            dev   = ((s - ma200) / ma200 * 100).dropna()
+            series[ticker] = {
+                "label": label,
+                "color": color,
+                "price": s,
+                "dev":   dev,
+                "cur_price": float(s.iloc[-1]),
+                "cur_dev":   float(dev.iloc[-1]),
+            }
+        except:
+            pass
+    return series
+
+def make_bond_fig(bond_data, period_label=""):
+    """⑧ 채권 ETF — 가격 시계열 + 200일 편차%"""
+    if not bond_data:
+        return go.Figure(), go.Figure()
+
+    # 차트 A: 가격 정규화 (시작점 100 기준)
+    fig_price = go.Figure()
+    for ticker, info in bond_data.items():
+        s = info["price"]
+        normalized = (s / float(s.iloc[0]) * 100)
+        dates_s = [d.strftime("%Y-%m-%d") for d in s.index]
+        fig_price.add_trace(go.Scatter(
+            x=dates_s, y=normalized.values.tolist(),
+            name=f"{ticker} {info['label']}",
+            mode="lines",
+            line=dict(color=info["color"], width=1.8),
+            hovertemplate=f"<b>{ticker}</b>: %{{y:.1f}}<br>%{{x}}<extra></extra>",
+        ))
+    fig_price.add_hline(y=100, line_color="rgba(150,150,150,0.4)",
+                        line_width=1, line_dash="dot")
+    fig_price.update_layout(
+        title=f"⑧-A 채권 ETF 가격 (시작점=100 정규화)  [{period_label}]",
+        height=420, hovermode="x unified",
+        plot_bgcolor="#fafafa", paper_bgcolor="white",
+        margin=dict(l=55, r=10, t=50, b=60),
+        legend=dict(orientation="h", x=0, y=-0.18,
+                    font=dict(size=10, color="#111"),
+                    bgcolor="rgba(255,255,255,0.85)"),
+        yaxis=dict(
+            title="정규화 가격 (시작=100)",
+            tickfont=dict(size=9, color="#111"),
+            gridcolor="rgba(180,180,180,0.15)",
+        ),
+        xaxis=dict(tickfont=dict(size=9, color="#111"),
+                   gridcolor="rgba(180,180,180,0.18)"),
+    )
+
+    # 차트 B: 200일 편차%
+    fig_dev = go.Figure()
+    for ticker, info in bond_data.items():
+        dev = info["dev"]
+        dates_s = [d.strftime("%Y-%m-%d") for d in dev.index]
+        fig_dev.add_trace(go.Scatter(
+            x=dates_s, y=dev.values.tolist(),
+            name=f"{ticker} ({info['cur_dev']:+.1f}%)",
+            mode="lines",
+            line=dict(color=info["color"], width=1.8),
+            hovertemplate=f"<b>{ticker}</b>: %{{y:+.1f}}%<br>%{{x}}<extra></extra>",
+        ))
+    fig_dev.add_hline(y=0,   line_color="rgba(150,150,150,0.4)", line_width=1)
+    fig_dev.add_hline(y=10,  line_color="rgba(226,75,74,0.3)",
+                      line_width=0.8, line_dash="dot",
+                      annotation_text="+10%", annotation_font=dict(size=8))
+    fig_dev.add_hline(y=-10, line_color="rgba(74,144,217,0.3)",
+                      line_width=0.8, line_dash="dot",
+                      annotation_text="-10%", annotation_font=dict(size=8))
+    fig_dev.update_layout(
+        title=f"⑧-B 채권 ETF 200일 이동평균 대비 편차%  [{period_label}]",
+        height=420, hovermode="x unified",
+        plot_bgcolor="#fafafa", paper_bgcolor="white",
+        margin=dict(l=55, r=10, t=50, b=60),
+        legend=dict(orientation="h", x=0, y=-0.18,
+                    font=dict(size=10, color="#111"),
+                    bgcolor="rgba(255,255,255,0.85)"),
+        yaxis=dict(
+            title="편차 (%)", ticksuffix="%",
+            tickfont=dict(size=9, color="#111"),
+            gridcolor="rgba(180,180,180,0.15)",
+            zeroline=True, zerolinecolor="rgba(150,150,150,0.4)",
+        ),
+        xaxis=dict(tickfont=dict(size=9, color="#111"),
+                   gridcolor="rgba(180,180,180,0.18)"),
+    )
+    return fig_price, fig_dev
+
+def make_wti_fig(spot_df, fut_df, dates):
+    """⑥ WTI 현물(EIA) vs 선물(CL=F) vs 괴리"""
     fig = go.Figure()
+    dates_idx = pd.to_datetime(dates)
 
-    # 선물 (yfinance, 기존 A["WTI"])
-    fig.add_trace(go.Scatter(
-        x=dates, y=futures_s.values.tolist(),
-        name="WTI 선물 (CL=F)",
-        mode="lines",
-        line=dict(color="#1A3A6B", width=2.0),
-        hovertemplate="<b>WTI 선물</b>: $%{y:.2f}<br>%{x}<extra></extra>",
-    ))
+    spread_note = "EIA API 키 필요"
 
+    # WTI 선물 (CL=F)
+    if fut_df is not None:
+        fut_reindexed = fut_df["Futures"].reindex(dates_idx).ffill()
+        fig.add_trace(go.Scatter(
+            x=dates, y=fut_reindexed.values.tolist(),
+            name="WTI 선물 (CL=F)",
+            mode="lines",
+            line=dict(color="#1A3A6B", width=2.0),
+            hovertemplate="<b>WTI 선물</b>: $%{y:.2f}<br>%{x}<extra></extra>",
+        ))
+    else:
+        fut_reindexed = None
+
+    # WTI 현물 (EIA 주간)
     if spot_df is not None:
-        # 현물과 선물 공통 인덱스
-        spot_reindexed = spot_df["Spot"].reindex(
-            pd.to_datetime(dates)
-        ).ffill()
-
+        spot_reindexed = spot_df["Spot"].reindex(dates_idx).ffill(limit=7)
         fig.add_trace(go.Scatter(
             x=dates, y=spot_reindexed.values.tolist(),
             name="WTI 현물 (EIA Cushing)",
@@ -338,55 +479,45 @@ def make_wti_fig(spot_df, futures_s, dates):
             hovertemplate="<b>WTI 현물</b>: $%{y:.2f}<br>%{x}<extra></extra>",
         ))
 
-        # 괴리 (현물 - 선물)
-        spread = spot_reindexed - futures_s.reindex(pd.to_datetime(dates)).ffill()
-        fig.add_trace(go.Scatter(
-            x=dates, y=spread.values.tolist(),
-            name="괴리 (현물 - 선물)",
-            mode="lines",
-            line=dict(color="#8E44AD", width=1.5, dash="dash"),
-            yaxis="y2",
-            hovertemplate="<b>괴리</b>: $%{y:.2f}<br>%{x}<extra></extra>",
-        ))
+        if fut_reindexed is not None:
+            spread = spot_reindexed - fut_reindexed
+            fig.add_trace(go.Scatter(
+                x=dates, y=spread.values.tolist(),
+                name="괴리 (현물 - 선물)",
+                mode="lines",
+                line=dict(color="#8E44AD", width=1.5, dash="dash"),
+                yaxis="y2",
+                hovertemplate="<b>괴리</b>: $%{y:.2f}<br>%{x}<extra></extra>",
+            ))
+            fig.add_hline(y=0, line_color="rgba(150,150,150,0.4)",
+                          line_width=1, line_dash="dot", yref="y2")
 
-        # 0 기준선
-        fig.add_hline(y=0, line_color="rgba(150,150,150,0.4)",
-                      line_width=1, line_dash="dot", yref="y2")
-
-        # 현재 괴리 표시
-        cur_spread = float(spread.dropna().iloc[-1]) if len(spread.dropna()) > 0 else 0
-        cur_spot   = float(spot_reindexed.dropna().iloc[-1]) if len(spot_reindexed.dropna()) > 0 else 0
-        cur_fut    = float(futures_s.iloc[-1])
-        spread_note = (
-            f"현물 ${cur_spot:.1f} / 선물 ${cur_fut:.1f} / "
-            f"괴리 ${cur_spread:+.1f}"
-        )
-    else:
-        spread_note = "EIA API 키 필요"
+            cur_spot   = float(spot_reindexed.dropna().iloc[-1])
+            cur_fut    = float(fut_reindexed.dropna().iloc[-1])
+            cur_spread = cur_spot - cur_fut
+            spread_note = (
+                f"현물 ${cur_spot:.1f} / 선물 ${cur_fut:.1f} / "
+                f"괴리 ${cur_spread:+.1f}"
+            )
 
     fig.update_layout(
-        title=f"⑥ WTI 유가 — 현물 vs 선물 vs 괴리  ({spread_note})",
+        title=f"⑥ WTI 유가 — 현물(EIA) vs 선물(CL=F) vs 괴리  ({spread_note})",
         height=480, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=80, t=50, b=60),
         legend=dict(orientation="h", x=0, y=-0.15,
                     font=dict(size=10, color="#111")),
         yaxis=dict(
-            title="가격 ($/bbl)",
-            title_font=dict(color="#C0392B", size=10),
+            title="가격 ($/bbl)", tickprefix="$",
             tickfont=dict(color="#111", size=9),
             gridcolor="rgba(180,180,180,0.15)",
-            tickprefix="$",
         ),
         yaxis2=dict(
-            title="괴리 ($)",
+            title="괴리 ($)", tickprefix="$",
             title_font=dict(color="#8E44AD", size=10),
             tickfont=dict(color="#8E44AD", size=9),
-            overlaying="y", side="right",
-            showgrid=False,
-            tickprefix="$",
-            zeroline=True,
-            zerolinecolor="rgba(142,68,173,0.3)",
+            overlaying="y", side="right", showgrid=False,
+            zeroline=True, zerolinecolor="rgba(142,68,173,0.3)",
         ),
         xaxis=dict(
             tickfont=dict(size=9, color="#111"),
@@ -479,13 +610,14 @@ with st.sidebar:
     show_crisis = st.toggle("경제위기 구간 표시", value=True)
     show_fig3   = st.toggle("④ 통합 차트 표시",   value=True)
     show_fig5   = st.toggle("⑤ 보정 차트 표시",   value=True)
-    show_fig6   = st.toggle("⑥ WTI 현물/선물 표시", value=True)
+    show_fig6   = st.toggle("⑥ WTI 현물/선물 표시",   value=True)
     show_fig7   = st.toggle("⑦ 섹터별 이격 표시",    value=True)
+    show_fig8   = st.toggle("⑧ 채권 ETF 표시",         value=True)
 
     st.divider()
 
     st.divider()
-    st.markdown("**🛢 EIA API 키**")
+    st.markdown("**🛢 EIA API 키 (WTI 현물)**")
     try:
         eia_key = st.secrets["EIA_API_KEY"]
         st.caption("Secrets에서 로드됨")
@@ -961,6 +1093,141 @@ def render_legend(items, chart_height=460):
     )
     st.markdown(html, unsafe_allow_html=True)
 
+
+# ══════════════════════════════════════════════════════
+# 신호 모니터링 대시보드
+# ══════════════════════════════════════════════════════
+st.divider()
+st.markdown("### 🚨 신호 모니터링 대시보드")
+
+# 신호용 데이터 — 토글 상태와 무관하게 항상 로드
+with st.spinner("신호 데이터 로딩 중..."):
+    _signal_sector = load_sector_data(period)
+    _signal_bond   = load_bond_data(period)
+
+def calc_dev_single(s, w=200):
+    ma = s.rolling(w, min_periods=50).mean()
+    return ((s - ma) / ma * 100)
+
+# 신호 계산
+signals = []
+
+# 1. VIX
+if "VIX" in A:
+    vix_now = float(A["VIX"].iloc[-1])
+    vix_signal = "🔴 경고" if vix_now >= 25 else "🟡 주의" if vix_now >= 20 else "🟢 정상"
+    vix_hit = vix_now >= 20
+    signals.append(("VIX", f"{vix_now:.1f}", "≥20 주의 / ≥25 경고", vix_signal, vix_hit))
+
+# 2. 나스닥 편차 꺾임
+if "NQ" in A:
+    nq_dev = calc_dev_single(A["NQ"])
+    nq_now = float(nq_dev.iloc[-1])
+    nq_peak20 = float(nq_dev.iloc[-20:].max())
+    nq_drop = nq_peak20 - nq_now
+    nq_signal = "🔴 경고" if nq_drop >= 5 else "🟡 주의" if nq_drop >= 2 else "🟢 정상"
+    nq_hit = nq_drop >= 5
+    signals.append(("나스닥 편차 꺾임", f"{nq_now:+.1f}% (20일고점 대비 -{nq_drop:.1f}%p)",
+                    "20일 고점 대비 -5%p 이탈", nq_signal, nq_hit))
+
+# 3. 금 편차
+if "GLD" in A:
+    gld_dev = calc_dev_single(A["GLD"])
+    gld_now = float(gld_dev.iloc[-1])
+    gld_signal = "🔴 경고" if gld_now >= 15 else "🟡 주의" if gld_now >= 10 else "🟢 정상"
+    gld_hit = gld_now >= 10
+    signals.append(("금 편차%", f"{gld_now:+.1f}%", "≥+10% 기관 헷지 신호", gld_signal, gld_hit))
+
+# 4. HYG 편차 (채권 데이터 있으면)
+try:
+    if "HYG" in _signal_bond:
+        hyg_dev = float(_signal_bond["HYG"]["cur_dev"])
+        hyg_signal = "🔴 경고" if hyg_dev <= -10 else "🟡 주의" if hyg_dev <= -5 else "🟢 정상"
+        hyg_hit = hyg_dev <= -5
+        signals.append(("HYG 신용 스프레드", f"{hyg_dev:+.1f}%",
+                        "≤-5% 주의 / ≤-10% 경고", hyg_signal, hyg_hit))
+except:
+    pass
+
+# 5. WTI 현물 재반등
+if "WTI" in A:
+    wti_now = float(A["WTI"].iloc[-1])
+    wti_dev = float(calc_dev_single(A["WTI"]).iloc[-1])
+    wti_signal = "🔴 경고" if wti_dev >= 30 else "🟡 주의" if wti_dev >= 15 else "🟢 정상"
+    wti_hit = wti_dev >= 15
+    signals.append(("WTI 유가 편차%", f"{wti_dev:+.1f}% (${wti_now:.1f})",
+                    "≥+15% 주의 / ≥+30% 경고", wti_signal, wti_hit))
+
+# 6. XLP 방어 로테이션 (섹터 데이터 있으면)
+try:
+    if "XLP" in _signal_sector:
+        xlp_dev = _signal_sector["XLP"]["dev"]
+        xlp_now = float(xlp_dev.iloc[-1])
+        xlp_mom = float(xlp_dev.diff(20).iloc[-1])
+        xlp_hit = xlp_now > 5 and xlp_mom > 2
+        xlp_signal = "🟡 주의" if xlp_hit else "🟢 정상"
+        signals.append(("XLP 방어 로테이션", f"편차 {xlp_now:+.1f}% 모멘텀 {xlp_mom:+.1f}%p",
+                        "편차>5%+모멘텀 양전환", xlp_signal, xlp_hit))
+except:
+    pass
+
+# 7. SOXX vs QQQ 괴리
+try:
+    if "SOXX" in _signal_sector and "QQQ" in _signal_sector:
+        soxx_now = float(_signal_sector["SOXX"]["dev"].iloc[-1])
+        qqq_now  = float(_signal_sector["QQQ"]["dev"].iloc[-1])
+        gap = soxx_now - qqq_now
+        gap_signal = "🟡 주의" if gap > 30 else "🟢 정상"
+        gap_hit = gap > 30
+        signals.append(("SOXX-QQQ 이격 괴리", f"SOXX{soxx_now:+.0f}% QQQ{qqq_now:+.0f}% (괴리{gap:+.0f}%p)",
+                        "괴리 >30%p 극단적 집중", gap_signal, gap_hit))
+except:
+    pass
+
+# 8. IWM-QQQ breadth
+try:
+    if "IWM" in _signal_sector and "QQQ" in _signal_sector:
+        iwm_now = float(_signal_sector["IWM"]["dev"].iloc[-1])
+        qqq_now = float(_signal_sector["QQQ"]["dev"].iloc[-1])
+        breadth_gap = qqq_now - iwm_now
+        breadth_signal = "🟡 주의" if breadth_gap > 15 else "🟢 정상"
+        breadth_hit = breadth_gap > 15
+        signals.append(("Market Breadth (QQQ-IWM)", f"괴리 {breadth_gap:+.1f}%p",
+                        ">15%p Breadth 악화", breadth_signal, breadth_hit))
+except:
+    pass
+
+# 신호 카운트
+hit_count = sum(1 for s in signals if s[4])
+total = len(signals)
+
+# 전체 상태 배너
+if hit_count == 0:
+    st.success(f"✅ 신호 없음 — {total}개 지표 모두 정상")
+elif hit_count <= 2:
+    st.warning(f"⚠️ {hit_count}/{total}개 신호 감지 — 모니터링 강화")
+else:
+    st.error(f"🚨 {hit_count}/{total}개 신호 동시 감지 — 주요 타이밍 구간")
+
+# 신호 카드
+st.markdown("<br>", unsafe_allow_html=True)
+cols = st.columns(min(len(signals), 4))
+for i, (name, value, threshold, signal, hit) in enumerate(signals):
+    with cols[i % 4]:
+        bg = "#fff0f0" if "경고" in signal else "#fffbe6" if "주의" in signal else "#f0fff4"
+        border = "#E24B4A" if "경고" in signal else "#F1C40F" if "주의" in signal else "#27AE60"
+        st.markdown(
+            f"<div style='background:{bg};border:1.5px solid {border};"
+            f"border-radius:8px;padding:8px 10px;margin-bottom:6px'>"
+            f"<div style='font-size:10px;color:#555;font-weight:600'>{name}</div>"
+            f"<div style='font-size:12px;color:#111;font-weight:700;margin:3px 0'>{value}</div>"
+            f"<div style='font-size:9px;color:#888'>{threshold}</div>"
+            f"<div style='font-size:11px;margin-top:4px'>{signal}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
 # ① 혈압
 c1, c2 = st.columns([6, 1])
 with c1:
@@ -1037,22 +1304,33 @@ if show_fig5:
 # ⑥ WTI 현물/선물/괴리
 if show_fig6:
     st.divider()
-    spot_df = load_eia_spot(eia_key) if eia_key else None
-    if "WTI" in A:
-        wti_futures = A["WTI"]
-        c1, c2 = st.columns([6, 1])
-        with c1:
-            st.plotly_chart(make_wti_fig(spot_df, wti_futures, dates),
-                           use_container_width=True)
-        with c2:
-            st.markdown("##### ⑥ WTI")
-            render_legend([
-                ("선물 (CL=F)", "#1A3A6B", "WTI 1개월 선물",    "$/bbl"),
-                ("현물 (EIA)",  "#E67E22", "Cushing OK 현물",   "$/bbl"),
-                ("괴리",        "#8E44AD", "현물 - 선물",        "$ 차이"),
-            ], chart_height=480)
-    else:
-        st.warning("WTI 데이터 없음")
+    with st.spinner("WTI 데이터 로딩 중..."):
+        wti_spot_df, wti_fut_df = load_wti_data(eia_key) if eia_key else (None, None)
+        # EIA 키 없어도 선물은 yfinance로
+        if wti_fut_df is None:
+            try:
+                raw = yf.download("CL=F", period="max", interval="1d",
+                                  progress=False, auto_adjust=True)
+                if not raw.empty:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        s = raw[("Close","CL=F")].dropna()
+                    else:
+                        s = raw["Close"].dropna()
+                    wti_fut_df = s.astype(float).to_frame("Futures")
+                    wti_fut_df.index = pd.to_datetime(wti_fut_df.index).tz_localize(None)
+            except:
+                pass
+    c1, c2 = st.columns([6, 1])
+    with c1:
+        st.plotly_chart(make_wti_fig(wti_spot_df, wti_fut_df, dates),
+                       use_container_width=True, key="wti_chart")
+    with c2:
+        st.markdown("##### ⑥ WTI")
+        render_legend([
+            ("선물 (CL=F)", "#1A3A6B", "WTI 선물", "$/bbl"),
+            ("현물 (EIA)",  "#E67E22", "WTI 현물 (주간)", "$/bbl"),
+            ("괴리",        "#8E44AD", "현물 - 선물",   "$ 차이"),
+        ], chart_height=480)
 
 # ⑦ 섹터별 편차
 if show_fig7:
@@ -1080,26 +1358,108 @@ if show_fig7:
     else:
         st.warning("섹터 데이터를 불러오지 못했습니다.")
 
+# ⑧ 채권 ETF
+if show_fig8:
+    st.divider()
+    with st.spinner("채권 ETF 데이터 로딩 중..."):
+        bond_data = load_bond_data(period)
+    if bond_data:
+        # 현재 상태 카드
+        bcols = st.columns(len(bond_data))
+        for i, (ticker, info) in enumerate(bond_data.items()):
+            with bcols[i]:
+                cur_p = info["cur_price"]
+                cur_d = info["cur_dev"]
+                color = "#E24B4A" if cur_d < -10 else "#E67E22" if cur_d < -5 else                         "#27AE60" if cur_d > 5 else "#555"
+                st.markdown(
+                    f"<div style='background:#f8f8f8;border-radius:8px;padding:6px;"
+                    f"text-align:center;border:0.5px solid #ddd'>"
+                    f"<div style='font-size:10px;color:#555'>{ticker}</div>"
+                    f"<div style='font-size:9px;color:#888'>{info['label']}</div>"
+                    f"<div style='font-size:13px;font-weight:700;color:#111'>${cur_p:.2f}</div>"
+                    f"<div style='font-size:10px;color:{color}'>{cur_d:+.1f}%</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        fig_p, fig_d = make_bond_fig(bond_data, period_label)
+        c1, c2 = st.columns([6, 1])
+        with c1:
+            st.plotly_chart(fig_p, use_container_width=True, key="bond_price")
+            st.plotly_chart(fig_d, use_container_width=True, key="bond_dev")
+        with c2:
+            st.markdown("##### ⑧ 채권")
+            render_legend([
+                ("SHY", "#4A90D9", "단기채 1-3년",    "가격"),
+                ("IEF", "#27AE60", "중기채 7-10년",   "가격"),
+                ("TLT", "#8E44AD", "장기채 20년+",    "가격"),
+                ("HYG", "#E24B4A", "하이일드 회사채", "가격"),
+                ("JNK", "#F1C40F", "정크본드",         "가격"),
+                ("LQD", "#E67E22", "투자등급 회사채", "가격"),
+            ], chart_height=900)
+    else:
+        st.warning("채권 ETF 데이터를 불러오지 못했습니다.")
+
 # ══════════════════════════════════════════════════════
+# 데이터 다운로드# ══════════════════════════════════════════════════════
 # 데이터 다운로드# ══════════════════════════════════════════════════════
 # 데이터 다운로드
 # ══════════════════════════════════════════════════════
 st.divider()
 st.markdown("### 💾 데이터 다운로드")
 
-combined = pd.DataFrame({
-    k: A[k] for k in A
-})
+# ── 모든 데이터 통합 ─────────────────────────────────────────
+# 1) 바이탈 8개 지표
+combined = pd.DataFrame({k: A[k] for k in A})
 combined.index.name = "Date"
+
+# 2) 섹터 ETF 편차% (⑦)
+try:
+    if "sector_data" in dir() and sector_data:
+        for ticker, info in sector_data.items():
+            col_name = f"섹터_{ticker}_{info['label']}_편차%"
+            combined[col_name] = info["dev"].reindex(combined.index)
+except:
+    pass
+
+# 3) 채권 ETF 가격 + 편차% (⑧)
+try:
+    if "bond_data" in dir() and bond_data:
+        for ticker, info in bond_data.items():
+            combined[f"채권_{ticker}_{info['label']}_가격"] = (
+                info["price"].reindex(combined.index)
+            )
+            combined[f"채권_{ticker}_{info['label']}_편차%"] = (
+                info["dev"].reindex(combined.index)
+            )
+except:
+    pass
+
+# 4) WTI 현물/선물/괴리 (⑥)
+try:
+    if "wti_spot_df" in dir() and wti_spot_df is not None:
+        combined["WTI_현물_EIA"] = wti_spot_df["Spot"].reindex(combined.index)
+    if "wti_fut_df" in dir() and wti_fut_df is not None:
+        combined["WTI_선물_CLF"] = wti_fut_df["Futures"].reindex(combined.index)
+    if "wti_spot_df" in dir() and wti_spot_df is not None and        "wti_fut_df" in dir() and wti_fut_df is not None:
+        combined["WTI_괴리(현물-선물)"] = (
+            wti_spot_df["Spot"].reindex(combined.index) -
+            wti_fut_df["Futures"].reindex(combined.index)
+        )
+except:
+    pass
+
+combined.sort_index(ascending=False, inplace=True)
 
 col1, col2 = st.columns(2)
 
 with col1:
     csv_bytes = combined.to_csv().encode("utf-8-sig")
     st.download_button(
-        label="📄 CSV 다운로드",
+        label="📄 전체 CSV (바이탈+섹터+채권+WTI)",
         data=csv_bytes,
-        file_name=f"market_vitals_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"market_vitals_full_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv",
         use_container_width=True,
     )
@@ -1107,20 +1467,68 @@ with col1:
 with col2:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # 시트1: 전체 통합 (모든 컬럼)
         combined.to_excel(writer, sheet_name="전체_통합")
+        # 시트2: 바이탈 지표별
         for key, (sym, fin, bio, unit, color) in TICKERS.items():
             if key not in A: continue
             df_out = A[key].to_frame("Close")
-            df_out["전일대비"] = df_out["Close"].diff()
+            df_out["전일대비"]  = df_out["Close"].diff()
             df_out["변화율(%)"] = df_out["Close"].pct_change() * 100
-            df_out["52주최고"] = df_out["Close"].rolling(252).max()
-            df_out["52주최저"] = df_out["Close"].rolling(252).min()
+            df_out["52주최고"]  = df_out["Close"].rolling(252).max()
+            df_out["52주최저"]  = df_out["Close"].rolling(252).min()
             df_out.to_excel(writer, sheet_name=f"{bio}_{fin}"[:31])
+        # 시트3: 섹터 편차%
+        try:
+            if "sector_data" in dir() and sector_data:
+                sec_df = pd.DataFrame({
+                    f"{t}_{info['label']}": info["dev"]
+                    for t, info in sector_data.items()
+                })
+                sec_df.index.name = "Date"
+                sec_df.sort_index(ascending=False).to_excel(writer, sheet_name="섹터_편차%")
+        except:
+            pass
+        # 시트4: 채권 ETF
+        try:
+            if "bond_data" in dir() and bond_data:
+                bond_price_df = pd.DataFrame({
+                    f"{t}_{info['label']}_가격": info["price"]
+                    for t, info in bond_data.items()
+                })
+                bond_dev_df = pd.DataFrame({
+                    f"{t}_{info['label']}_편차%": info["dev"]
+                    for t, info in bond_data.items()
+                })
+                bond_price_df.index.name = "Date"
+                bond_dev_df.index.name   = "Date"
+                bond_price_df.sort_index(ascending=False).to_excel(writer, sheet_name="채권_가격")
+                bond_dev_df.sort_index(ascending=False).to_excel(writer,  sheet_name="채권_편차%")
+        except:
+            pass
+        # 시트5: WTI 현물/선물/괴리
+        try:
+            wti_rows = {}
+            if "wti_spot_df" in dir() and wti_spot_df is not None:
+                wti_rows["WTI_현물_EIA"] = wti_spot_df["Spot"]
+            if "wti_fut_df" in dir() and wti_fut_df is not None:
+                wti_rows["WTI_선물_CLF"] = wti_fut_df["Futures"]
+            if "WTI_현물_EIA" in wti_rows and "WTI_선물_CLF" in wti_rows:
+                wti_rows["괴리(현물-선물)"] = (
+                    wti_rows["WTI_현물_EIA"] - wti_rows["WTI_선물_CLF"]
+                )
+            if wti_rows:
+                wti_out = pd.DataFrame(wti_rows)
+                wti_out.index.name = "Date"
+                wti_out.sort_index(ascending=False).to_excel(
+                    writer, sheet_name="WTI_현물선물괴리")
+        except:
+            pass
     buf.seek(0)
     st.download_button(
-        label="📊 Excel 다운로드",
+        label="📊 전체 Excel (시트 구분)",
         data=buf,
-        file_name=f"market_vitals_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        file_name=f"market_vitals_full_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
