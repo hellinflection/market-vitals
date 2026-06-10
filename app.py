@@ -345,6 +345,8 @@ def load_bond_data(period_key: str):
         "LQD":  ("투자등급 회사채","#E67E22"),
     }
     use_start = period_key.isdigit()
+    SHORT_PERIODS = {"1wk", "1mo", "3mo", "5d", "1d"}
+    load_period_b = "2y" if period_key in SHORT_PERIODS else period_key
     series = {}
     for ticker, (label, color) in BOND_TICKERS.items():
         try:
@@ -352,7 +354,7 @@ def load_bond_data(period_key: str):
                 df = yf.download(ticker, start=f"{period_key}-01-01",
                                  interval="1d", progress=False, auto_adjust=True)
             else:
-                df = yf.download(ticker, period=period_key,
+                df = yf.download(ticker, period=load_period_b,
                                  interval="1d", progress=False, auto_adjust=True)
             if df.empty: continue
             if isinstance(df.columns, pd.MultiIndex):
@@ -543,16 +545,20 @@ def load_data(period: str):
 
     # 연도 문자열(예: "1990")이면 start 날짜 방식으로 처리
     use_start = period.isdigit()
+    # 200일 MA 계산을 위해 항상 최소 2년치 로드
+    # 단기 기간(1주, 1개월 등)도 데이터는 2년 로드 후 표시만 제한
+    SHORT_PERIODS = {"1wk", "1mo", "3mo", "5d", "1d"}
+    load_period = "2y" if period in SHORT_PERIODS else period
 
     data = {}
     for key, (sym, *_) in TICKERS.items():
         try:
-            # 1. 일별 히스토리 로드
+            # 1. 일별 히스토리 로드 (항상 충분한 기간)
             if use_start:
                 df = yf.download(sym, start=f"{period}-01-01",
                                  interval="1d", progress=False, auto_adjust=True)
             else:
-                df = yf.download(sym, period=period, interval="1d",
+                df = yf.download(sym, period=load_period, interval="1d",
                                  progress=False, auto_adjust=True)
             if df.empty:
                 continue
