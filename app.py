@@ -544,39 +544,50 @@ def load_data(period: str):
     # 연도 문자열(예: "1990")이면 start 날짜 방식으로 처리
     use_start = period.isdigit()
 
-    def get_latest_price(sym):
-        """1분봉으로 당일 최신가 가져오기"""
-        try:
-            df1m = yf.download(sym, period="1d", interval="1m",
-                               progress=False, auto_adjust=True)
-            if not df1m.empty:
-                s = extract_close(df1m)
-                if len(s) > 0:
-                    return float(s.iloc[-1])
-        except:
-            pass
-        return None
-
     data = {}
     for key, (sym, *_) in TICKERS.items():
         try:
+            # 1. 일별 히스토리 로드
             if use_start:
                 df = yf.download(sym, start=f"{period}-01-01",
                                  interval="1d", progress=False, auto_adjust=True)
             else:
                 df = yf.download(sym, period=period, interval="1d",
                                  progress=False, auto_adjust=True)
-            if not df.empty:
-                s = extract_close(df)
-                # 1분봉으로 당일 최신가 보정 (NaN 여부 무관)
-                latest = get_latest_price(sym)
-                if latest is not None:
-                    s = s.dropna()
-                    if len(s) > 0:
-                        last_idx = s.index[-1]
-                        next_day = last_idx + pd.Timedelta(days=1)
-                        s[next_day] = latest
-                data[key] = s
+            if df.empty:
+                continue
+            s = extract_close(df).dropna()
+            if len(s) == 0:
+                continue
+
+            # 2. 1분봉으로 당일 최신가 가져오기
+            try:
+                df1m = yf.download(sym, period="1d", interval="1m",
+                                   progress=False, auto_adjust=True)
+                if not df1m.empty:
+                    s1m = extract_close(df1m).dropna()
+                    if len(s1m) > 0:
+                        latest_price = float(s1m.iloc[-1])
+                        # 일별 Series 마지막 날짜
+                        last_date = s.index[-1]
+                        if hasattr(last_date, 'date'):
+                            last_date = last_date.date()
+                        import datetime
+                        today_date = datetime.date.today()
+                        # 오늘 데이터가 없으면 오늘 날짜로 추가
+                        today_ts = pd.Timestamp(today_date)
+                        if pd.Timestamp(last_date) < today_ts:
+                            s = pd.concat([s,
+                                pd.Series([latest_price],
+                                          index=[today_ts],
+                                          name=s.name)])
+                        else:
+                            # 오늘 데이터가 이미 있으면 덮어쓰기
+                            s.iloc[-1] = latest_price
+            except:
+                pass
+
+            data[key] = s
         except:
             pass
 
