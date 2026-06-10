@@ -276,7 +276,7 @@ def make_sector_fig(sector_data, period_label=""):
             name=f"{info['label']} ({ticker})  {cur:+.1f}%",
             mode="lines",
             line=dict(color=info["color"], width=1.8),
-            hovertemplate=f"<b>{info['label']}</b>: %{{y:+.1f}}%<br>%{{x}}<extra></extra>",
+            hovertemplate=f"<b>{info['label']}</b>: %{{y:+.2f}}%<br>%{{x}}<extra></extra>",
         ))
 
     # 기준선
@@ -422,7 +422,7 @@ def make_bond_fig(bond_data, period_label=""):
             name=f"{ticker} ({info['cur_dev']:+.1f}%)",
             mode="lines",
             line=dict(color=info["color"], width=1.8),
-            hovertemplate=f"<b>{ticker}</b>: %{{y:+.1f}}%<br>%{{x}}<extra></extra>",
+            hovertemplate=f"<b>{ticker}</b>: %{{y:+.2f}}%<br>%{{x}}<extra></extra>",
         ))
     fig_dev.add_hline(y=0,   line_color="rgba(150,150,150,0.4)", line_width=1)
     fig_dev.add_hline(y=10,  line_color="rgba(226,75,74,0.3)",
