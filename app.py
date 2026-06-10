@@ -308,7 +308,7 @@ def make_sector_fig(sector_data, period_label=""):
         d0, d1 = dates[0], dates[-1]
 
     fig.update_layout(
-        title=f"⑦ 섹터별 200일 이동평균 대비 편차% 시계열  [{period_label}]  ※ 전일 종가 기준",
+        title=f"⑦ 섹터별 200일 이동평균 대비 편차% 시계열  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
         height=580, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=80),
@@ -398,7 +398,7 @@ def make_bond_fig(bond_data, period_label=""):
     fig_price.add_hline(y=100, line_color="rgba(150,150,150,0.4)",
                         line_width=1, line_dash="dot")
     fig_price.update_layout(
-        title=f"⑧-A 채권 ETF 가격 (시작점=100 정규화)  [{period_label}]  ※ 전일 종가 기준",
+        title=f"⑧-A 채권 ETF 가격 (시작점=100 정규화)  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
         height=420, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=60),
@@ -434,7 +434,7 @@ def make_bond_fig(bond_data, period_label=""):
                       line_width=0.8, line_dash="dot",
                       annotation_text="-10%", annotation_font=dict(size=8))
     fig_dev.update_layout(
-        title=f"⑧-B 채권 ETF 200일 이동평균 대비 편차%  [{period_label}]  ※ 전일 종가 기준",
+        title=f"⑧-B 채권 ETF 200일 이동평균 대비 편차%  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
         height=420, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=60),
