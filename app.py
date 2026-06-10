@@ -308,7 +308,7 @@ def make_sector_fig(sector_data, period_label=""):
         d0, d1 = dates[0], dates[-1]
 
     fig.update_layout(
-        title=f"⑦ 섹터별 200일 이동평균 대비 편차% 시계열  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
+        title=f"⑦ 섹터별 200일 이동평균 대비 편차% 시계열  [{period_label}]  ",
         height=580, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=80),
@@ -398,7 +398,7 @@ def make_bond_fig(bond_data, period_label=""):
     fig_price.add_hline(y=100, line_color="rgba(150,150,150,0.4)",
                         line_width=1, line_dash="dot")
     fig_price.update_layout(
-        title=f"⑧-A 채권 ETF 가격 (시작점=100 정규화)  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
+        title=f"⑧-A 채권 ETF 가격 (시작점=100 정규화)  [{period_label}]  ",
         height=420, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=60),
@@ -434,7 +434,7 @@ def make_bond_fig(bond_data, period_label=""):
                       line_width=0.8, line_dash="dot",
                       annotation_text="-10%", annotation_font=dict(size=8))
     fig_dev.update_layout(
-        title=f"⑧-B 채권 ETF 200일 이동평균 대비 편차%  [{period_label}]  ※ 전일 종가 기준 (한국시간 전전일)",
+        title=f"⑧-B 채권 ETF 200일 이동평균 대비 편차%  [{period_label}]  ",
         height=420, hovermode="x unified",
         plot_bgcolor="#fafafa", paper_bgcolor="white",
         margin=dict(l=55, r=10, t=50, b=60),
@@ -1399,6 +1399,7 @@ if show_fig7:
         with c1:
             st.plotly_chart(make_sector_fig(sector_data, period_label),
                            use_container_width=True)
+            st.caption("※ 전일 종가 기준 (한국시간 기준 전전일)")
         with c2:
             st.markdown("##### ⑦ 섹터")
             st.markdown(
@@ -1421,30 +1422,12 @@ if show_fig8:
     with st.spinner("채권 ETF 데이터 로딩 중..."):
         bond_data = load_bond_data(period)
     if bond_data:
-        # 현재 상태 카드
-        bcols = st.columns(len(bond_data))
-        for i, (ticker, info) in enumerate(bond_data.items()):
-            with bcols[i]:
-                cur_p = info["cur_price"]
-                cur_d = info["cur_dev"]
-                color = "#E24B4A" if cur_d < -10 else "#E67E22" if cur_d < -5 else                         "#27AE60" if cur_d > 5 else "#555"
-                st.markdown(
-                    f"<div style='background:#f8f8f8;border-radius:8px;padding:6px;"
-                    f"text-align:center;border:0.5px solid #ddd'>"
-                    f"<div style='font-size:10px;color:#555'>{ticker}</div>"
-                    f"<div style='font-size:9px;color:#888'>{info['label']}</div>"
-                    f"<div style='font-size:13px;font-weight:700;color:#111'>${cur_p:.2f}</div>"
-                    f"<div style='font-size:10px;color:{color}'>{cur_d:+.1f}%</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-        st.markdown("<br>", unsafe_allow_html=True)
-
         fig_p, fig_d = make_bond_fig(bond_data, period_label)
         c1, c2 = st.columns([6, 1])
         with c1:
             st.plotly_chart(fig_p, use_container_width=True, key="bond_price")
             st.plotly_chart(fig_d, use_container_width=True, key="bond_dev")
+            st.caption("※ 전일 종가 기준 (한국시간 기준 전전일)")
         with c2:
             st.markdown("##### ⑧ 채권")
             render_legend([
