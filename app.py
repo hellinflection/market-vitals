@@ -156,6 +156,7 @@ def grade_color(key, val):
 # ══════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════
+
 # WTI 현물/선물 데이터
 # ══════════════════════════════════════════════════════
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -624,6 +625,12 @@ with st.sidebar:
     except:
         eia_key = st.text_input("EIA API Key", type="password",
                                 placeholder="eia.gov에서 무료 발급")
+
+    st.divider()
+    st.markdown("**🔗 유용한 링크**")
+    st.markdown("[🤖 Is AI Profitable Yet?](https://isaiprofitable.com)")
+    st.markdown("[😨 Fear & Greed Index](https://edition.cnn.com/markets/fear-and-greed)")
+    st.markdown("[🚢 힌덴부르크 오멘 (@Hindenburg0men)](https://x.com/Hindenburg0men)")
 
     if st.button("🔄 데이터 새로고침", use_container_width=True):
         st.cache_data.clear()
