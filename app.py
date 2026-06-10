@@ -319,6 +319,7 @@ def make_sector_fig(sector_data, period_label=""):
             title="200일 MA 대비 편차 (%)",
             title_font=dict(size=10, color="#555"),
             tickfont=dict(size=9, color="#111"),
+            tickformat=".2f",
             ticksuffix="%",
             gridcolor="rgba(180,180,180,0.15)",
             zeroline=True, zerolinecolor="rgba(150,150,150,0.4)",
@@ -439,7 +440,7 @@ def make_bond_fig(bond_data, period_label=""):
                     font=dict(size=10, color="#111"),
                     bgcolor="rgba(255,255,255,0.85)"),
         yaxis=dict(
-            title="편차 (%)", ticksuffix="%",
+            title="편차 (%)", tickformat=".2f", ticksuffix="%",
             tickfont=dict(size=9, color="#111"),
             gridcolor="rgba(180,180,180,0.15)",
             zeroline=True, zerolinecolor="rgba(150,150,150,0.4)",
@@ -670,9 +671,11 @@ available_keys = [k for k in TICKERS if k in A]
 cols = st.columns(len(available_keys))
 for col_i, key in enumerate(available_keys):
     sym, fin, bio, unit, color = TICKERS[key]
-    val  = float(A[key].iloc[-1])
-    prev = float(A[key].iloc[-2]) if len(A[key]) > 1 else val
-    pct  = (val - prev) / prev * 100 if prev else 0
+    # 마지막 유효한 2개 데이터 포인트 비교 (0% 방지)
+    s_valid = A[key].dropna()
+    val  = float(s_valid.iloc[-1])
+    prev = float(s_valid.iloc[-2]) if len(s_valid) >= 2 else val
+    pct  = (val - prev) / prev * 100 if prev != 0 else 0
     g    = grade(key, val)
     gc   = grade_color(key, val)
     delta_cls = "vital-delta-up" if pct >= 0 else "vital-delta-down"
