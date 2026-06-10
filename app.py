@@ -545,7 +545,7 @@ def load_data(period: str):
     use_start = period.isdigit()
 
     def get_latest_price(sym):
-        """일별 데이터 NaN이면 1분봉으로 fallback"""
+        """1분봉으로 당일 최신가 가져오기"""
         try:
             df1m = yf.download(sym, period="1d", interval="1m",
                                progress=False, auto_adjust=True)
@@ -568,12 +568,12 @@ def load_data(period: str):
                                  progress=False, auto_adjust=True)
             if not df.empty:
                 s = extract_close(df)
-                # 마지막 값이 NaN이면 1분봉으로 최신가 보정
-                if len(s) > 0 and pd.isna(s.iloc[-1]):
-                    latest = get_latest_price(sym)
-                    if latest is not None:
-                        s = s.dropna()
-                        last_idx = s.index[-1] if len(s) > 0 else pd.Timestamp.today().normalize()
+                # 1분봉으로 당일 최신가 보정 (NaN 여부 무관)
+                latest = get_latest_price(sym)
+                if latest is not None:
+                    s = s.dropna()
+                    if len(s) > 0:
+                        last_idx = s.index[-1]
                         next_day = last_idx + pd.Timedelta(days=1)
                         s[next_day] = latest
                 data[key] = s
@@ -709,7 +709,7 @@ for col_i, key in enumerate(available_keys):
     arrow = "▲" if pct >= 0 else "▼"
     unit_str = f" {unit}" if unit else ""
     with cols[col_i]:
-        eod_note = '<div style="font-size:8px;color:#aaa;margin-top:2px">전일 EOD</div>' if key in ("TNX","VIX") else ""
+        eod_note = ""
         st.markdown(f"""
 <div class="vital-card">
   <div class="vital-label">{bio}</div>
