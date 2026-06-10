@@ -272,8 +272,8 @@ def make_sector_fig(sector_data, period_label=""):
         dates_s = [d.strftime("%Y-%m-%d") for d in dev_plot.index]
         cur = info["cur"]
         fig.add_trace(go.Scatter(
-            x=dates_s, y=dev.values.tolist(),
-            name=f"{info['label']} ({ticker})  {cur:+.1f}%",
+            x=dates_s, y=[round(v, 2) for v in dev.values.tolist()],
+            name=f"{info['label']} ({ticker})  {cur:+.2f}%",
             mode="lines",
             line=dict(color=info["color"], width=1.8),
             hovertemplate=f"<b>{info['label']}</b>: %{{y:+.2f}}%<br>%{{x}}<extra></extra>",
@@ -418,8 +418,8 @@ def make_bond_fig(bond_data, period_label=""):
         dev = info["dev"]
         dates_s = [d.strftime("%Y-%m-%d") for d in dev.index]
         fig_dev.add_trace(go.Scatter(
-            x=dates_s, y=dev.values.tolist(),
-            name=f"{ticker} ({info['cur_dev']:+.1f}%)",
+            x=dates_s, y=[round(v, 2) for v in dev.values.tolist()],
+            name=f"{ticker} ({info['cur_dev']:+.2f}%)",
             mode="lines",
             line=dict(color=info["color"], width=1.8),
             hovertemplate=f"<b>{ticker}</b>: %{{y:+.2f}}%<br>%{{x}}<extra></extra>",
@@ -529,7 +529,7 @@ def make_wti_fig(spot_df, fut_df, dates):
     )
     return fig
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_data(period: str):
     def extract_close(df):
         if isinstance(df.columns, pd.MultiIndex):
@@ -544,6 +544,19 @@ def load_data(period: str):
     # 연도 문자열(예: "1990")이면 start 날짜 방식으로 처리
     use_start = period.isdigit()
 
+    def get_latest_price(sym):
+        """일별 데이터 NaN이면 1분봉으로 fallback"""
+        try:
+            df1m = yf.download(sym, period="1d", interval="1m",
+                               progress=False, auto_adjust=True)
+            if not df1m.empty:
+                s = extract_close(df1m)
+                if len(s) > 0:
+                    return float(s.iloc[-1])
+        except:
+            pass
+        return None
+
     data = {}
     for key, (sym, *_) in TICKERS.items():
         try:
@@ -554,7 +567,16 @@ def load_data(period: str):
                 df = yf.download(sym, period=period, interval="1d",
                                  progress=False, auto_adjust=True)
             if not df.empty:
-                data[key] = extract_close(df)
+                s = extract_close(df)
+                # 마지막 값이 NaN이면 1분봉으로 최신가 보정
+                if len(s) > 0 and pd.isna(s.iloc[-1]):
+                    latest = get_latest_price(sym)
+                    if latest is not None:
+                        s = s.dropna()
+                        last_idx = s.index[-1] if len(s) > 0 else pd.Timestamp.today().normalize()
+                        next_day = last_idx + pd.Timedelta(days=1)
+                        s[next_day] = latest
+                data[key] = s
         except:
             pass
 
@@ -673,9 +695,14 @@ for col_i, key in enumerate(available_keys):
     sym, fin, bio, unit, color = TICKERS[key]
     # 마지막 유효한 2개 데이터 포인트 비교 (0% 방지)
     s_valid = A[key].dropna()
-    val  = float(s_valid.iloc[-1])
-    prev = float(s_valid.iloc[-2]) if len(s_valid) >= 2 else val
-    pct  = (val - prev) / prev * 100 if prev != 0 else 0
+    # MultiIndex 등으로 Series가 아닌 경우 대비
+    def to_scalar(v):
+        if hasattr(v, "values"):
+            return float(v.values.flat[0])
+        return float(v)
+    val  = to_scalar(s_valid.iloc[-1])
+    prev = to_scalar(s_valid.iloc[-2]) if len(s_valid) >= 2 else val
+    pct  = round((val - prev) / prev * 100, 2) if prev != 0 else 0
     g    = grade(key, val)
     gc   = grade_color(key, val)
     delta_cls = "vital-delta-up" if pct >= 0 else "vital-delta-down"
