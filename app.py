@@ -83,8 +83,8 @@ st.markdown("""
 # 설정
 # ══════════════════════════════════════════════════════
 TICKERS = {
-    "NQ":  ("^NDX",     "나스닥 100",       "수축기 혈압", "pt",    "#E24B4A"),
-    "SP":  ("^GSPC",    "S&P 500",         "이완기 혈압", "pt",    "#F0A500"),
+    "NQ":  ("NQ=F",     "나스닥100 선물",    "수축기 혈압", "pt",    "#E24B4A"),
+    "SP":  ("ES=F",     "S&P500 선물",      "이완기 혈압", "pt",    "#F0A500"),
     "TNX": ("^TNX",     "미국채 10년물",    "심박수",      "%",     "#8E44AD"),
     "DXY": ("DX-Y.NYB", "달러 인덱스",      "체온",        "DXY",   "#4A90D9"),
     "VIX": ("^VIX",     "VIX 변동성",       "호흡수",      "",      "#27AE60"),
@@ -709,12 +709,14 @@ for col_i, key in enumerate(available_keys):
     arrow = "▲" if pct >= 0 else "▼"
     unit_str = f" {unit}" if unit else ""
     with cols[col_i]:
+        eod_note = '<div style="font-size:8px;color:#aaa;margin-top:2px">전일 EOD</div>' if key in ("TNX","VIX") else ""
         st.markdown(f"""
 <div class="vital-card">
   <div class="vital-label">{bio}</div>
   <div class="vital-fin">{fin}</div>
   <div class="vital-value">{val:,.2f}{unit_str}</div>
   <div class="{delta_cls}">{arrow} {abs(pct):.2f}%</div>
+  {eod_note}
 </div>""", unsafe_allow_html=True)
 
 
