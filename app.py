@@ -618,13 +618,14 @@ with st.sidebar:
     st.divider()
 
     st.divider()
-    st.markdown("**🛢 EIA API 키 (WTI 현물)**")
+    # EIA API 키 (로컬 전용 — GitHub 업로드 금지)
+    eia_key = "6JxDUEiHc0mBFhmdiPFlqc9Ct2ggTJuVvkY3yXOu"
     try:
-        eia_key = st.secrets["EIA_API_KEY"]
-        st.caption("Secrets에서 로드됨")
+        _secret = st.secrets["EIA_API_KEY"]
+        if _secret:
+            eia_key = _secret
     except:
-        eia_key = st.text_input("EIA API Key", type="password",
-                                placeholder="eia.gov에서 무료 발급")
+        pass
 
     st.divider()
     st.markdown("**🔗 유용한 링크**")
